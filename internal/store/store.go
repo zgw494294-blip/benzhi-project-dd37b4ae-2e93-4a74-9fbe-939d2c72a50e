@@ -117,6 +117,10 @@ func replay(s *Store) error {
 	s.rebuildTrialIndexesLocked()
 	return sc.Err()
 }
+// appendLocked durably appends an event to the audit log and only then records it
+// in memory. When persistence fails it leaves s.events (and therefore the event
+// count and hash chain head) exactly as it was before the call, so callers can
+// report a clean failure without leaking partially committed state.
 func (s *Store) appendLocked(typ, id string, version int, payload any) error {
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -136,18 +140,21 @@ func (s *Store) appendLocked(typ, id string, version int, payload any) error {
 	}{e.Seq, e.Type, e.ID, e.Version, e.Payload, e.PrevHash})
 	h := sha256.Sum256(append([]byte(prev), raw...))
 	e.Hash = hex.EncodeToString(h[:])
-	s.events = append(s.events, e)
 	if s.dir != "" {
 		f, er := os.OpenFile(filepath.Join(s.dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if er != nil {
 			return er
 		}
-		defer f.Close()
 		enc := json.NewEncoder(f)
 		if er = enc.Encode(e); er != nil {
+			f.Close()
+			return er
+		}
+		if er = f.Close(); er != nil {
 			return er
 		}
 	}
+	s.events = append(s.events, e)
 	return nil
 }
 func (s *Store) PutSource(v domain.SeedSource, expected int) error {
@@ -167,9 +174,12 @@ func (s *Store) PutSource(v domain.SeedSource, expected int) error {
 	v.LotCode = domain.NormalizeLotCode(v.LotCode)
 	v.AssociatedTrialCount, v.UnarchivedTrialCount = 0, 0
 	v.CanCreateTrial = v.Status == "active"
+	if err := s.appendLocked("source", v.ID, v.Version, v); err != nil {
+		return err
+	}
 	s.sources[v.ID] = v
 	s.lotIndex[v.LotCode] = v.ID
-	return s.appendLocked("source", v.ID, v.Version, v)
+	return nil
 }
 func okExpected[T any](m map[string]T, id string, expected int) bool {
 	_, ok := m[id]
@@ -189,9 +199,12 @@ func (s *Store) PutTrial(v domain.GerminationTrial, expected int) error {
 		return domain.ErrConflict
 	}
 	v.Version = expected + 1
+	if err := s.appendLocked("trial", v.ID, v.Version, v); err != nil {
+		return err
+	}
 	s.trials[v.ID] = cloneTrial(v)
 	s.rebuildTrialIndexesLocked()
-	return s.appendLocked("trial", v.ID, v.Version, v)
+	return nil
 }
 func (s *Store) PutCertificate(v domain.ArchiveCertificate) error {
 	s.mu.Lock()
@@ -199,15 +212,21 @@ func (s *Store) PutCertificate(v domain.ArchiveCertificate) error {
 	if _, ok := s.certificates[v.ID]; ok {
 		return domain.ErrConflict
 	}
+	if err := s.appendLocked("certificate", v.ID, 1, v); err != nil {
+		return err
+	}
 	s.certificates[v.ID] = v
-	return s.appendLocked("certificate", v.ID, 1, v)
+	return nil
 }
 
 func (s *Store) PutAudit(v domain.AuditEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.appendLocked("audit", v.ID, v.ResultVersion, v); err != nil {
+		return err
+	}
 	s.auditEntries = append(s.auditEntries, v)
-	return s.appendLocked("audit", v.ID, v.ResultVersion, v)
+	return nil
 }
 
 func (s *Store) AuditEntries(aggregateID string) []domain.AuditEntry {
@@ -313,8 +332,11 @@ func (s *Store) PutIdempotency(record IdempotencyRecord) error {
 		}
 		return nil
 	}
+	if err := s.appendLocked("idempotency", record.Key, 1, record); err != nil {
+		return err
+	}
 	s.idempotency[record.Key] = record
-	return s.appendLocked("idempotency", record.Key, 1, record)
+	return nil
 }
 func (s *Store) EventCount() int { s.mu.RLock(); defer s.mu.RUnlock(); return len(s.events) }
 
