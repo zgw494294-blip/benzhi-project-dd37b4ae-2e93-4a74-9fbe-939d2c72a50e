@@ -266,6 +266,20 @@ func (s *Server) claimIdempotency(key string) (*idempotencyRun, bool) {
 	return run, true
 }
 
+// releaseIdempotency completes an in-flight run: it removes the entry so that
+// later requests with the same key can become leaders again, then wakes any
+// followers waiting on the run. On successful runs the persisted
+// IdempotencyRecord is the source of truth; failed runs persist nothing and
+// allow a fresh leader to re-execute the full creation flow.
+func (s *Server) releaseIdempotency(key string, run *idempotencyRun) {
+	s.idempotencyMu.Lock()
+	if current, ok := s.idempotencyRuns[key]; ok && current == run {
+		delete(s.idempotencyRuns, key)
+	}
+	s.idempotencyMu.Unlock()
+	close(run.done)
+}
+
 func (s *Server) idempotency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -312,15 +326,24 @@ func (s *Server) idempotency(next http.Handler) http.Handler {
 			write(w, http.StatusConflict, map[string]string{"error": "幂等请求尚未成功，请稍后重试"})
 			return
 		}
-		defer close(run.done)
+		// releaseIdempotency removes the in-flight entry (so later requests with
+		// the same key can become leaders again) and wakes any followers. This
+		// runs on every return path, including panics propagated to the
+		// recoverer: failed runs persist nothing, letting retries re-execute the
+		// full creation flow; successful runs leave the IdempotencyRecord as the
+		// single source of truth for concurrent reuse.
+		released := false
+		release := func() {
+			if released {
+				return
+			}
+			released = true
+			s.releaseIdempotency(key, run)
+		}
+		defer release()
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		captured := &bufferedWriter{header: make(http.Header)}
 		next.ServeHTTP(captured, r)
-		for name, values := range captured.header {
-			for _, value := range values {
-				w.Header().Add(name, value)
-			}
-		}
 		status := captured.status
 		if status == 0 {
 			status = 200
@@ -329,8 +352,15 @@ func (s *Server) idempotency(next http.Handler) http.Handler {
 		if status >= 200 && status < 300 {
 			record := store.IdempotencyRecord{Key: key, Method: r.Method, Path: r.URL.Path, RequestHash: requestHash, Status: status, ResponseBody: response, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 			if err := s.Workflow.Store.PutIdempotency(record); err != nil {
+				release()
 				fail(w, err)
 				return
+			}
+		}
+		release()
+		for name, values := range captured.header {
+			for _, value := range values {
+				w.Header().Add(name, value)
 			}
 		}
 		w.WriteHeader(status)
