@@ -85,7 +85,16 @@ func replay(s *Store) error {
 			Payload  json.RawMessage
 			PrevHash string
 		}{e.Seq, e.Type, e.ID, e.Version, e.Payload, e.PrevHash})
-		h := sha256.Sum256(append([]byte(prev), raw...))
+		// The current event log may be a continuation after an external
+		// rotation: its first persisted event can carry a PrevHash that
+		// anchors to the previous (rotated) chain head. Seed verification
+		// from the carried pointer instead of forcing an empty prefix so a
+		// successful post-rotation append remains queryable after reopen.
+		verifyPrev := prev
+		if verifyPrev == "" {
+			verifyPrev = e.PrevHash
+		}
+		h := sha256.Sum256(append([]byte(verifyPrev), raw...))
 		if hex.EncodeToString(h[:]) != e.Hash {
 			return fmt.Errorf("审计哈希链校验失败")
 		}
@@ -152,9 +161,37 @@ func (s *Store) appendLocked(typ, id string, version int, payload any) error {
 }
 
 func (s *Store) eventLogLocked() (*os.File, error) {
-	if s.eventFile != nil {
-		return s.eventFile, nil
+	if s.eventFile == nil {
+		return s.openEventLogLocked()
 	}
+	// Detect external rotation/replacement of events.jsonl (e.g. atomic rename to
+	// backup plus a fresh current log put back at the original path). The cached
+	// handle may now point at the rotated backup inode instead of the current log,
+	// which would silently route subsequent appends to the wrong file. Reopen when
+	// the path no longer resolves to the same file as the cached handle.
+	cached, err := s.eventFile.Stat()
+	if err != nil {
+		// Stale/unreachable file descriptor: reopen the current log.
+		s.eventFile.Close()
+		s.eventFile = nil
+		return s.openEventLogLocked()
+	}
+	current, err := os.Stat(filepath.Join(s.dir, "events.jsonl"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return s.openEventLogLocked()
+		}
+		return nil, err
+	}
+	if !os.SameFile(cached, current) {
+		s.eventFile.Close()
+		s.eventFile = nil
+		return s.openEventLogLocked()
+	}
+	return s.eventFile, nil
+}
+
+func (s *Store) openEventLogLocked() (*os.File, error) {
 	f, err := os.OpenFile(filepath.Join(s.dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err

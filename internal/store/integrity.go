@@ -31,12 +31,25 @@ func (s *Store) CheckIntegrity() IntegrityReport {
 			Payload  json.RawMessage
 			PrevHash string
 		}{item.Seq, item.Type, item.ID, item.Version, item.Payload, item.PrevHash})
-		hash := sha256.Sum256(append([]byte(previous), raw...))
+		// The in-memory chain may begin with a continuation event whose
+		// PrevHash anchors to a rotated-out head; seed hash verification from
+		// the carried pointer so post-rotation appends stay verifiable.
+		verifyPrev := previous
+		firstAfterRotation := index == 0 && previous == ""
+		if firstAfterRotation {
+			verifyPrev = item.PrevHash
+		}
+		hash := sha256.Sum256(append([]byte(verifyPrev), raw...))
 		expected := hex.EncodeToString(hash[:])
-		if item.Seq != index+1 {
+		// Sequence numbers continue the global chain across a rotation, so the
+		// first persisted event in a continuation log keeps its original seq
+		// rather than restarting from 1.
+		if (!firstAfterRotation || item.PrevHash == "") && item.Seq != index+1 {
 			report.add("error", "event.sequence", item.ID, "事件序号不连续")
 		}
-		if item.PrevHash != previous {
+		// The first event of a continuation log legitimately anchors to a
+		// non-empty previous head that is no longer in the current log.
+		if !firstAfterRotation && item.PrevHash != previous {
 			report.add("error", "event.previous_hash", item.ID, "事件前置哈希不匹配")
 		}
 		if item.Hash != expected {

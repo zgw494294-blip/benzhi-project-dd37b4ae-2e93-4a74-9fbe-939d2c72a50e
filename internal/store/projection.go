@@ -72,11 +72,21 @@ func (s *Store) ValidateProjection() error {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if snapshot.LastSequence > len(s.events) {
+	switch {
+	case snapshot.LastSequence == len(s.events):
+		if len(s.events) > 0 && snapshot.LastHash != s.events[len(s.events)-1].Hash {
+			return fmt.Errorf("投影快照与事件哈希链不一致")
+		}
+	case snapshot.LastSequence > len(s.events) && len(s.events) > 0:
+		// External rotation of events.jsonl may leave the current log holding
+		// only the post-rotation tail while the projection still records the
+		// full chain head. Treat the snapshot as consistent when the current
+		// log's head matches the recorded chain head.
+		if snapshot.LastHash != s.events[len(s.events)-1].Hash {
+			return fmt.Errorf("投影快照与事件哈希链不一致")
+		}
+	case snapshot.LastSequence > len(s.events):
 		return fmt.Errorf("投影快照超前于事件日志")
-	}
-	if snapshot.LastSequence == len(s.events) && len(s.events) > 0 && snapshot.LastHash != s.events[len(s.events)-1].Hash {
-		return fmt.Errorf("投影快照与事件哈希链不一致")
 	}
 	return nil
 }
