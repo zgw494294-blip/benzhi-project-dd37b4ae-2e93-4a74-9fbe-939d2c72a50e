@@ -215,9 +215,17 @@ func (s *Store) PutAudit(v domain.AuditEntry) error {
 
 func (s *Store) AuditEntries(aggregateID string) []domain.AuditEntry {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if cached, ok := s.auditViews[aggregateID]; ok {
-		return cached
+		out := cloneAuditEntries(cached)
+		s.mu.RUnlock()
+		return out
+	}
+	s.mu.RUnlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cached, ok := s.auditViews[aggregateID]; ok {
+		return cloneAuditEntries(cached)
 	}
 	result := make([]domain.AuditEntry, 0, len(s.auditEntries))
 	for _, item := range s.auditEntries {
@@ -225,16 +233,9 @@ func (s *Store) AuditEntries(aggregateID string) []domain.AuditEntry {
 			result = append(result, item)
 		}
 	}
-	cached := make([]domain.AuditEntry, len(result))
-	for index, item := range result {
-		cached[index] = item
-		cached[index].Details = make(map[string]string, len(item.Details))
-		for key, value := range item.Details {
-			cached[index].Details[key] = value
-		}
-	}
+	cached := cloneAuditEntries(result)
 	s.auditViews[aggregateID] = cached
-	return cached
+	return cloneAuditEntries(cached)
 }
 
 func (s *Store) DataDir() string { return s.dir }

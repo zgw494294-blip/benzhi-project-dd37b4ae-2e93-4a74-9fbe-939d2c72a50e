@@ -2,6 +2,30 @@ package store
 
 import "seedvault/internal/domain"
 
+func cloneStringMap(input map[string]string) map[string]string {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for k, v := range input {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneAuditEntry(value domain.AuditEntry) domain.AuditEntry {
+	value.Details = cloneStringMap(value.Details)
+	return value
+}
+
+func cloneAuditEntries(input []domain.AuditEntry) []domain.AuditEntry {
+	out := make([]domain.AuditEntry, len(input))
+	for index, item := range input {
+		out[index] = cloneAuditEntry(item)
+	}
+	return out
+}
+
 func cloneTrial(value domain.GerminationTrial) domain.GerminationTrial {
 	value.ObservationSchedule = append([]string(nil), value.ObservationSchedule...)
 	value.Observations = append([]domain.Observation(nil), value.Observations...)
