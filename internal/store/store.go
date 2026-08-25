@@ -30,6 +30,7 @@ type Store struct {
 	trials       map[string]domain.GerminationTrial
 	certificates map[string]domain.ArchiveCertificate
 	auditEntries []domain.AuditEntry
+	auditViews   map[string][]domain.AuditEntry
 	events       []event
 	idem         map[string]json.RawMessage
 	idempotency  map[string]IdempotencyRecord
@@ -46,7 +47,7 @@ type IdempotencyRecord struct {
 }
 
 func Open(dir string) (*Store, error) {
-	s := &Store{dir: dir, sources: map[string]domain.SeedSource{}, trials: map[string]domain.GerminationTrial{}, certificates: map[string]domain.ArchiveCertificate{}, idem: map[string]json.RawMessage{}, idempotency: map[string]IdempotencyRecord{}, lotIndex: map[string]string{}, sourceTrials: map[string]map[string]bool{}, designIndex: map[string]string{}}
+	s := &Store{dir: dir, sources: map[string]domain.SeedSource{}, trials: map[string]domain.GerminationTrial{}, certificates: map[string]domain.ArchiveCertificate{}, auditViews: map[string][]domain.AuditEntry{}, idem: map[string]json.RawMessage{}, idempotency: map[string]IdempotencyRecord{}, lotIndex: map[string]string{}, sourceTrials: map[string]map[string]bool{}, designIndex: map[string]string{}}
 	if dir == "" {
 		return s, nil
 	}
@@ -207,19 +208,33 @@ func (s *Store) PutAudit(v domain.AuditEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.auditEntries = append(s.auditEntries, v)
+	delete(s.auditViews, v.AggregateID)
+	delete(s.auditViews, "")
 	return s.appendLocked("audit", v.ID, v.ResultVersion, v)
 }
 
 func (s *Store) AuditEntries(aggregateID string) []domain.AuditEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if cached, ok := s.auditViews[aggregateID]; ok {
+		return cached
+	}
 	result := make([]domain.AuditEntry, 0, len(s.auditEntries))
 	for _, item := range s.auditEntries {
 		if aggregateID == "" || item.AggregateID == aggregateID {
 			result = append(result, item)
 		}
 	}
-	return result
+	cached := make([]domain.AuditEntry, len(result))
+	for index, item := range result {
+		cached[index] = item
+		cached[index].Details = make(map[string]string, len(item.Details))
+		for key, value := range item.Details {
+			cached[index].Details[key] = value
+		}
+	}
+	s.auditViews[aggregateID] = cached
+	return cached
 }
 
 func (s *Store) DataDir() string { return s.dir }
