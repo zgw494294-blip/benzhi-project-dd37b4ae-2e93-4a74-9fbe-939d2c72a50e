@@ -26,8 +26,11 @@ type SourcePage struct {
 }
 
 func (s *Store) QueryTrials(filter TrialFilter) TrialPage {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cached, ok := s.trialQueries[filter]; ok {
+		return cloneTrialPage(cached)
+	}
 	items := make([]domain.GerminationTrial, 0, len(s.trials))
 	for _, trial := range s.trials {
 		if filter.SeedSourceID != "" && trial.SeedSourceID != filter.SeedSourceID {
@@ -45,7 +48,7 @@ func (s *Store) QueryTrials(filter TrialFilter) TrialPage {
 		if filter.HasOpenIssues && !hasOpenIssue(trial) {
 			continue
 		}
-		items = append(items, trial)
+		items = append(items, cloneTrial(trial))
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].ReviewState == items[j].ReviewState {
@@ -59,7 +62,18 @@ func (s *Store) QueryTrials(filter TrialFilter) TrialPage {
 	if end > total {
 		end = total
 	}
-	return TrialPage{Items: append([]domain.GerminationTrial(nil), items[offset:end]...), Total: total, Offset: offset, Limit: limit}
+	page := TrialPage{Items: append([]domain.GerminationTrial(nil), items[offset:end]...), Total: total, Offset: offset, Limit: limit}
+	s.trialQueries[filter] = cloneTrialPage(page)
+	return cloneTrialPage(page)
+}
+
+func cloneTrialPage(page TrialPage) TrialPage {
+	result := page
+	result.Items = make([]domain.GerminationTrial, len(page.Items))
+	for index := range page.Items {
+		result.Items[index] = cloneTrial(page.Items[index])
+	}
+	return result
 }
 func (s *Store) QuerySources(filter SourceFilter) SourcePage {
 	s.mu.RLock()

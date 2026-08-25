@@ -36,6 +36,7 @@ type Store struct {
 	lotIndex     map[string]string
 	sourceTrials map[string]map[string]bool
 	designIndex  map[string]string
+	trialQueries map[TrialFilter]TrialPage
 }
 
 type IdempotencyRecord struct {
@@ -46,7 +47,7 @@ type IdempotencyRecord struct {
 }
 
 func Open(dir string) (*Store, error) {
-	s := &Store{dir: dir, sources: map[string]domain.SeedSource{}, trials: map[string]domain.GerminationTrial{}, certificates: map[string]domain.ArchiveCertificate{}, idem: map[string]json.RawMessage{}, idempotency: map[string]IdempotencyRecord{}, lotIndex: map[string]string{}, sourceTrials: map[string]map[string]bool{}, designIndex: map[string]string{}}
+	s := &Store{dir: dir, sources: map[string]domain.SeedSource{}, trials: map[string]domain.GerminationTrial{}, certificates: map[string]domain.ArchiveCertificate{}, idem: map[string]json.RawMessage{}, idempotency: map[string]IdempotencyRecord{}, lotIndex: map[string]string{}, sourceTrials: map[string]map[string]bool{}, designIndex: map[string]string{}, trialQueries: map[TrialFilter]TrialPage{}}
 	if dir == "" {
 		return s, nil
 	}
