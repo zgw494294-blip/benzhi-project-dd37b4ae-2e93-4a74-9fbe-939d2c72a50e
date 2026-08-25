@@ -26,6 +26,7 @@ type event struct {
 type Store struct {
 	mu           sync.RWMutex
 	dir          string
+	eventFile    *os.File
 	sources      map[string]domain.SeedSource
 	trials       map[string]domain.GerminationTrial
 	certificates map[string]domain.ArchiveCertificate
@@ -138,17 +139,28 @@ func (s *Store) appendLocked(typ, id string, version int, payload any) error {
 	e.Hash = hex.EncodeToString(h[:])
 	s.events = append(s.events, e)
 	if s.dir != "" {
-		f, er := os.OpenFile(filepath.Join(s.dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, er := s.eventLogLocked()
 		if er != nil {
 			return er
 		}
-		defer f.Close()
 		enc := json.NewEncoder(f)
 		if er = enc.Encode(e); er != nil {
 			return er
 		}
 	}
 	return nil
+}
+
+func (s *Store) eventLogLocked() (*os.File, error) {
+	if s.eventFile != nil {
+		return s.eventFile, nil
+	}
+	f, err := os.OpenFile(filepath.Join(s.dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, err
+	}
+	s.eventFile = f
+	return f, nil
 }
 func (s *Store) PutSource(v domain.SeedSource, expected int) error {
 	s.mu.Lock()
