@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -41,6 +42,10 @@ type ReviewInput struct {
 type DecisionInput struct{ IssueID, Reason, Disposition, Evidence, EvidenceRef string }
 
 func (s *Service) CreateSource(in SourceInput) (domain.SeedSource, error) {
+	return s.CreateSourceContext(context.Background(), in)
+}
+
+func (s *Service) CreateSourceContext(ctx context.Context, in SourceInput) (domain.SeedSource, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.Store.SourceByLot(in.LotCode); ok {
@@ -61,6 +66,9 @@ func (s *Service) CreateSource(in SourceInput) (domain.SeedSource, error) {
 		v.CanCreateTrial = v.Status == "active"
 	}
 	e = s.Store.PutSource(v, 0)
+	if e == nil && ctx.Err() != nil {
+		return v, fmt.Errorf("请求已取消：%w", ctx.Err())
+	}
 	if e == nil {
 		e = s.Audit.Record(v.ID, "source.created", in.Collector, "实验员", "", 0, v.Version, map[string]string{"lotCode": v.LotCode})
 		_ = s.Store.WriteProjection()

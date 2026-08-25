@@ -98,7 +98,7 @@ func (s *Server) CreateSourceHandler(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	v, e := s.Workflow.CreateSource(in)
+	v, e := s.Workflow.CreateSourceContext(r.Context(), in)
 	respond(w, v, e, 201)
 }
 func (s *Server) UpdateSourceStatusHandler(w http.ResponseWriter, r *http.Request) {
