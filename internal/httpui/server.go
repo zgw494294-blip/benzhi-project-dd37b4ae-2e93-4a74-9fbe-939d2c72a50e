@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"seedvault/internal/domain"
@@ -20,12 +21,18 @@ import (
 var assets embed.FS
 
 type Server struct {
-	Workflow *workflow.Service
-	mux      *http.ServeMux
+	Workflow        *workflow.Service
+	mux             *http.ServeMux
+	idempotencyMu   sync.Mutex
+	idempotencyRuns map[string]*idempotencyRun
+}
+
+type idempotencyRun struct {
+	done chan struct{}
 }
 
 func New(w *workflow.Service) *Server {
-	s := &Server{Workflow: w, mux: http.NewServeMux()}
+	s := &Server{Workflow: w, mux: http.NewServeMux(), idempotencyRuns: map[string]*idempotencyRun{}}
 	s.routes()
 	return s
 }
@@ -248,6 +255,17 @@ func (w *bufferedWriter) Write(data []byte) (int, error) {
 	return w.body.Write(data)
 }
 
+func (s *Server) claimIdempotency(key string) (*idempotencyRun, bool) {
+	s.idempotencyMu.Lock()
+	defer s.idempotencyMu.Unlock()
+	if run, ok := s.idempotencyRuns[key]; ok {
+		return run, false
+	}
+	run := &idempotencyRun{done: make(chan struct{})}
+	s.idempotencyRuns[key] = run
+	return run, true
+}
+
 func (s *Server) idempotency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -281,6 +299,20 @@ func (s *Server) idempotency(next http.Handler) http.Handler {
 			w.Write(old.ResponseBody)
 			return
 		}
+		run, leader := s.claimIdempotency(key)
+		if !leader {
+			<-run.done
+			if old, ok := s.Workflow.Store.Idempotency(key); ok && old.RequestHash == requestHash {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.Header().Set("Idempotency-Replayed", "true")
+				w.WriteHeader(old.Status)
+				w.Write(old.ResponseBody)
+				return
+			}
+			write(w, http.StatusConflict, map[string]string{"error": "幂等请求尚未成功，请稍后重试"})
+			return
+		}
+		defer close(run.done)
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		captured := &bufferedWriter{header: make(http.Header)}
 		next.ServeHTTP(captured, r)
