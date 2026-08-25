@@ -24,18 +24,20 @@ type event struct {
 }
 
 type Store struct {
-	mu           sync.RWMutex
-	dir          string
-	sources      map[string]domain.SeedSource
-	trials       map[string]domain.GerminationTrial
-	certificates map[string]domain.ArchiveCertificate
-	auditEntries []domain.AuditEntry
-	events       []event
-	idem         map[string]json.RawMessage
-	idempotency  map[string]IdempotencyRecord
-	lotIndex     map[string]string
-	sourceTrials map[string]map[string]bool
-	designIndex  map[string]string
+	mu             sync.RWMutex
+	dir            string
+	sources        map[string]domain.SeedSource
+	trials         map[string]domain.GerminationTrial
+	certificates   map[string]domain.ArchiveCertificate
+	auditEntries   []domain.AuditEntry
+	events         []event
+	idem           map[string]json.RawMessage
+	idempotency    map[string]IdempotencyRecord
+	lotIndex       map[string]string
+	sourceTrials   map[string]map[string]bool
+	designIndex    map[string]string
+	projectionMu   sync.Mutex
+	projectionFile *os.File
 }
 
 type IdempotencyRecord struct {

@@ -24,6 +24,8 @@ func (s *Store) WriteProjection() error {
 	if s.dir == "" {
 		return nil
 	}
+	s.projectionMu.Lock()
+	defer s.projectionMu.Unlock()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	lastHash := ""
@@ -35,7 +37,7 @@ func (s *Store) WriteProjection() error {
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(s.dir, "projection-*.tmp")
+	temp, err := s.projectionTemp()
 	if err != nil {
 		return err
 	}
@@ -52,7 +54,23 @@ func (s *Store) WriteProjection() error {
 	if err = temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, filepath.Join(s.dir, "projection.json"))
+	err = os.Rename(name, filepath.Join(s.dir, "projection.json"))
+	if err == nil {
+		s.projectionFile = nil
+	}
+	return err
+}
+
+func (s *Store) projectionTemp() (*os.File, error) {
+	if s.projectionFile != nil {
+		return s.projectionFile, nil
+	}
+	temp, err := os.CreateTemp(s.dir, "projection-*.tmp")
+	if err != nil {
+		return nil, err
+	}
+	s.projectionFile = temp
+	return temp, nil
 }
 
 func (s *Store) ValidateProjection() error {
