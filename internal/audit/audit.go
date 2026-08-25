@@ -12,7 +12,15 @@ import (
 	"seedvault/internal/store"
 )
 
-type Service struct{ Store *store.Store }
+type sequenceCursor struct {
+	Sequence int
+	Hash     string
+}
+
+type Service struct {
+	Store         *store.Store
+	sequenceCache map[string]sequenceCursor
+}
 
 type TrailVerification struct {
 	Valid       bool
@@ -22,15 +30,22 @@ type TrailVerification struct {
 	Failures    []string
 }
 
-func New(s *store.Store) *Service { return &Service{Store: s} }
+func New(s *store.Store) *Service {
+	return &Service{Store: s, sequenceCache: map[string]sequenceCursor{}}
+}
 
 func (a *Service) Record(aggregateID, action, actor, role, requestKey string, expectedVersion, resultVersion int, details map[string]string) error {
-	entries := a.Store.AuditEntries(aggregateID)
-	previous := ""
-	sequence := len(entries) + 1
-	if len(entries) > 0 {
-		previous = entries[len(entries)-1].Hash
+	cursor, ok := a.sequenceCache[aggregateID]
+	if !ok {
+		entries := a.Store.AuditEntries(aggregateID)
+		if len(entries) > 0 {
+			last := entries[len(entries)-1]
+			cursor = sequenceCursor{Sequence: last.Sequence, Hash: last.Hash}
+		}
+		a.sequenceCache[aggregateID] = cursor
 	}
+	previous := cursor.Hash
+	sequence := cursor.Sequence + 1
 	entry := domain.AuditEntry{Sequence: sequence, ID: fmt.Sprintf("audit-%s-%d", aggregateID, sequence), AggregateID: aggregateID, Action: action, Actor: actor, Role: role, RequestKey: requestKey, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedVersion: expectedVersion, ResultVersion: resultVersion, Details: details, PreviousHash: previous}
 	payload, _ := json.Marshal(struct {
 		Sequence                                                     int
@@ -41,7 +56,11 @@ func (a *Service) Record(aggregateID, action, actor, role, requestKey string, ex
 	}{entry.Sequence, entry.ID, entry.AggregateID, entry.Action, entry.Actor, entry.Role, entry.RequestKey, entry.OccurredAt, entry.ExpectedVersion, entry.ResultVersion, entry.Details, entry.PreviousHash})
 	h := sha256.Sum256(append([]byte(previous), payload...))
 	entry.Hash = hex.EncodeToString(h[:])
-	return a.Store.PutAudit(entry)
+	if err := a.Store.PutAudit(entry); err != nil {
+		return err
+	}
+	a.sequenceCache[aggregateID] = sequenceCursor{Sequence: entry.Sequence, Hash: entry.Hash}
+	return nil
 }
 
 func (a *Service) Entries(aggregateID string) []domain.AuditEntry {
@@ -74,6 +93,9 @@ func (a *Service) VerifyTrail(aggregateID string) TrailVerification {
 	}
 	result.ChainHead = previous
 	result.Valid = len(result.Failures) == 0
+	if result.Valid {
+		a.sequenceCache[aggregateID] = sequenceCursor{Sequence: len(entries), Hash: result.ChainHead}
+	}
 	return result
 }
 
