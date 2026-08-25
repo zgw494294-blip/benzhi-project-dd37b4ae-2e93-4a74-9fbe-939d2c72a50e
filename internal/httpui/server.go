@@ -20,12 +20,13 @@ import (
 var assets embed.FS
 
 type Server struct {
-	Workflow *workflow.Service
-	mux      *http.ServeMux
+	Workflow        *workflow.Service
+	mux             *http.ServeMux
+	responseWriters chan *bufferedWriter
 }
 
 func New(w *workflow.Service) *Server {
-	s := &Server{Workflow: w, mux: http.NewServeMux()}
+	s := &Server{Workflow: w, mux: http.NewServeMux(), responseWriters: make(chan *bufferedWriter, 1)}
 	s.routes()
 	return s
 }
@@ -248,6 +249,25 @@ func (w *bufferedWriter) Write(data []byte) (int, error) {
 	return w.body.Write(data)
 }
 
+func (s *Server) acquireBufferedWriter() *bufferedWriter {
+	select {
+	case writer := <-s.responseWriters:
+		writer.header = make(http.Header)
+		writer.status = 0
+		writer.body.Reset()
+		return writer
+	default:
+		return &bufferedWriter{header: make(http.Header)}
+	}
+}
+
+func (s *Server) releaseBufferedWriter(writer *bufferedWriter) {
+	select {
+	case s.responseWriters <- writer:
+	default:
+	}
+}
+
 func (s *Server) idempotency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -282,7 +302,8 @@ func (s *Server) idempotency(next http.Handler) http.Handler {
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		captured := &bufferedWriter{header: make(http.Header)}
+		captured := s.acquireBufferedWriter()
+		defer s.releaseBufferedWriter(captured)
 		next.ServeHTTP(captured, r)
 		for name, values := range captured.header {
 			for _, value := range values {
@@ -293,7 +314,7 @@ func (s *Server) idempotency(next http.Handler) http.Handler {
 		if status == 0 {
 			status = 200
 		}
-		response := append([]byte(nil), captured.body.Bytes()...)
+		response := captured.body.Bytes()
 		if status >= 200 && status < 300 {
 			record := store.IdempotencyRecord{Key: key, Method: r.Method, Path: r.URL.Path, RequestHash: requestHash, Status: status, ResponseBody: response, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 			if err := s.Workflow.Store.PutIdempotency(record); err != nil {
